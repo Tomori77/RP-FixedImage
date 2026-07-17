@@ -60,11 +60,17 @@ class MemoryR2 {
 }
 
 const bucket = new MemoryR2();
+const assetRequests = [];
 const env = {
     RP_IMAGE_R2: bucket,
     RP_IMAGE_ADMIN_PASSWORD: 'test-password',
     RP_IMAGE_MASTER_KEY: 'test-master-key',
-    ASSETS: { fetch: async () => new Response('asset') }
+    ASSETS: {
+        fetch: async (request) => {
+            assetRequests.push(new URL(request.url).pathname);
+            return new Response('asset');
+        }
+    }
 };
 const origin = 'https://rp.example.com';
 const originalFetch = globalThis.fetch;
@@ -97,6 +103,14 @@ function assert(condition, message) {
 }
 
 try {
+    const adminRedirect = await request('/rp-image');
+    assert(adminRedirect.status === 308, 'admin path without slash did not redirect once');
+    assert(adminRedirect.headers.get('location') === `${origin}/rp-image/`, 'admin redirect target is invalid');
+
+    const adminPage = await request('/rp-image/');
+    assert(adminPage.ok && await adminPage.text() === 'asset', 'admin page was not served as a static asset');
+    assert(assetRequests.at(-1) === '/rp-image/', 'admin page was rewritten to index.html and may redirect loop');
+
     const login = await request('/rp-image/api/auth/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

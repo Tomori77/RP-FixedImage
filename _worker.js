@@ -1357,16 +1357,11 @@ async function handleApi(request, env, ctx) {
     throw new HttpError(404, 'API route not found.', 'not_found');
 }
 
-async function serveStatic(request, env, explicitIndex = false) {
+async function serveStatic(request, env) {
     if (!env?.ASSETS || typeof env.ASSETS.fetch !== 'function') {
         throw new HttpError(503, 'Missing ASSETS binding.', 'assets_not_configured');
     }
-    if (!explicitIndex) return env.ASSETS.fetch(request);
-    if (request.method !== 'GET' && request.method !== 'HEAD') return methodNotAllowed('GET, HEAD');
-    const assetUrl = new URL(request.url);
-    assetUrl.pathname = '/rp-image/index.html';
-    assetUrl.search = '';
-    return env.ASSETS.fetch(new Request(assetUrl, request));
+    return env.ASSETS.fetch(request);
 }
 
 export default {
@@ -1376,10 +1371,11 @@ export default {
             if (url.pathname === API_PREFIX || url.pathname.startsWith(`${API_PREFIX}/`)) {
                 return await handleApi(request, env, ctx);
             }
-            if (url.pathname === '/rp-image' || url.pathname === '/rp-image/') {
-                return await serveStatic(request, env, true);
+            if (url.pathname === '/rp-image') {
+                url.pathname = '/rp-image/';
+                return Response.redirect(url, 308);
             }
-            return await serveStatic(request, env, false);
+            return await serveStatic(request, env);
         } catch (error) {
             if (error instanceof HttpError) return fail(error.status, error.message, error.code);
             console.error('[RP Image Worker] Unexpected error:', error);

@@ -1,7 +1,8 @@
 (function () {
     'use strict';
 
-    const RENDER_PATH = '/rp-image/api/render';
+    const RENDER_PATH = '/generate';
+    const RENDER_PATHS = new Set([RENDER_PATH, '/rp-image/api/generate', '/rp-image/api/render']);
     const WEBP_PATH = '/rp-image/api/webp';
     const SETTINGS_PATH = '/rp-image/api/settings/public';
     const DEFAULT_QUALITY = 0.82;
@@ -49,7 +50,7 @@
     function isRenderUrl(value) {
         try {
             const url = new URL(value, window.location.href);
-            return url.origin === window.location.origin && url.pathname === RENDER_PATH;
+            return url.origin === window.location.origin && RENDER_PATHS.has(url.pathname);
         } catch (_) {
             return false;
         }
@@ -143,6 +144,7 @@
 
             const uploadUrl = new URL(WEBP_PATH, window.location.origin);
             uploadUrl.search = new URL(sourceUrl).search;
+            uploadUrl.searchParams.delete('token');
             const uploadResponse = await fetch(uploadUrl.href, {
                 method: 'PUT',
                 credentials: 'same-origin',

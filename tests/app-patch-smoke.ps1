@@ -17,29 +17,37 @@ if (Test-Path -LiteralPath $TempRoot) {
 }
 New-Item -ItemType Directory -Path (Join-Path $TempRoot 'assets\js') -Force | Out-Null
 
-$projectApp = Join-Path $ProjectRoot 'assets\js\app.js'
+$sourceApp = Join-Path $ProjectRoot 'assets\js\app.js'
 $tempApp = Join-Path $TempRoot 'assets\js\app.js'
-Copy-Item -LiteralPath $projectApp -Destination $tempApp -Force
-
-& (Join-Path $ProjectRoot 'rp-fixed-image-app.bat') restore $TempRoot
-if ($LASTEXITCODE -ne 0) { throw 'BAT restore failed' }
-if ((Get-NormalizedHash $tempApp) -ne '34A0E0C493227D46580506CE0B3A464D90F8234220E51E761DECCC4C4B5CB1A7') {
-    throw 'BAT restore output does not match RP-Hub 1.7.6'
-}
+Copy-Item -LiteralPath $sourceApp -Destination $tempApp -Force
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$updatedText = [IO.File]::ReadAllText($tempApp, [Text.Encoding]::UTF8) + "`n// Simulated RP update outside the patch points.`n"
+[IO.File]::WriteAllText($tempApp, $updatedText, $utf8NoBom)
+$originalHash = Get-NormalizedHash $tempApp
 
 & (Join-Path $ProjectRoot 'rp-fixed-image-app.bat') apply $TempRoot
 if ($LASTEXITCODE -ne 0) { throw 'BAT apply failed' }
-if ((Get-NormalizedHash $tempApp) -ne (Get-NormalizedHash $projectApp)) {
-    throw 'BAT apply output differs from project app.js'
+$patchedText = [IO.File]::ReadAllText($tempApp, [Text.Encoding]::UTF8)
+if (-not $patchedText.Contains('const IMAGE_GEN_BASE_URL = window.location.origin;')) {
+    throw 'BAT apply did not enable the same-origin proxy'
+}
+if ($patchedText -notmatch "&character_name=' \+ encodeURIComponent\(currentCharacter\.value\?\.name \|\| '[^']+'\) \+ '&model=") {
+    throw 'BAT apply did not add the character name to image requests'
+}
+if (-not $patchedText.Contains('// Simulated RP update outside the patch points.')) {
+    throw 'BAT apply discarded unrelated RP updates'
 }
 if (-not (Test-Path -LiteralPath "$tempApp.rp-fixed-image.bak")) {
     throw 'BAT apply did not create a backup'
 }
 
+& (Join-Path $ProjectRoot 'rp-fixed-image-app.bat') apply $TempRoot
+if ($LASTEXITCODE -ne 0) { throw 'BAT repeated apply failed' }
+
 & (Join-Path $ProjectRoot 'rp-fixed-image-app.bat') restore $TempRoot
 if ($LASTEXITCODE -ne 0) { throw 'BAT backup restore failed' }
-if ((Get-NormalizedHash $tempApp) -ne '34A0E0C493227D46580506CE0B3A464D90F8234220E51E761DECCC4C4B5CB1A7') {
-    throw 'BAT backup restore output does not match RP-Hub 1.7.6'
+if ((Get-NormalizedHash $tempApp) -ne $originalHash) {
+    throw 'BAT restore did not reproduce the updated source app.js'
 }
 
 Write-Host 'app.js BAT patch smoke test passed'

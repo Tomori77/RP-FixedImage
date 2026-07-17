@@ -6,8 +6,6 @@ const API = Object.freeze({
     authLogin: '/rp-image/api/auth/login',
     authLogout: '/rp-image/api/auth/logout',
     settings: '/rp-image/api/settings',
-    settingsTest: '/rp-image/api/settings/nai-key/test',
-    settingsKey: '/rp-image/api/settings/nai-key',
     images: '/rp-image/api/images',
     imageFile: '/rp-image/api/images/object',
     imageDelete: '/rp-image/api/images/delete',
@@ -65,7 +63,7 @@ function cacheDom() {
         'connectionBadge', 'refreshImagesButton', 'imageSearchInput', 'imageSummary', 'imageGroups',
         'refreshBackupsButton', 'siteLinkInput', 'siteIdValue', 'createBackupButton', 'backupProgress',
         'backupProgressText', 'backupProgressValue', 'backupProgressBar', 'backupCountBadge', 'backupList',
-        'settingsForm', 'naiKeyInput', 'keyStatusBadge', 'testKeyButton', 'deleteKeyButton', 'providerSelect',
+        'settingsForm',
         'webpQualityInput', 'webpQualityValue', 'backupRetentionInput', 'settingsMessage', 'saveSettingsButton',
         'previewDialog', 'previewTitle', 'previewImage', 'previewMeta', 'closePreviewButton', 'toastRegion'
     ];
@@ -84,8 +82,6 @@ function bindEvents() {
     dom.siteLinkInput.addEventListener('change', validateSiteLinkField);
     dom.createBackupButton.addEventListener('click', createBrowserBackup);
     dom.settingsForm.addEventListener('submit', saveSettings);
-    dom.testKeyButton.addEventListener('click', testNaiKey);
-    dom.deleteKeyButton.addEventListener('click', deleteNaiKey);
     dom.webpQualityInput.addEventListener('input', () => {
         dom.webpQualityValue.value = dom.webpQualityInput.value;
         dom.webpQualityValue.textContent = dom.webpQualityInput.value;
@@ -219,15 +215,12 @@ async function loadSettings(showSuccess = false) {
         const data = await apiJson(API.settings);
         const settings = data.settings || data;
         state.settings = settings;
-        dom.providerSelect.value = ['sta1n', 'std'].includes(settings.provider) ? settings.provider : 'sta1n';
         const rawQuality = Number(settings.webpQuality ?? settings.webp_quality ?? 0.82);
         const quality = clampInteger(rawQuality <= 1 ? rawQuality * 100 : rawQuality, 1, 100);
         dom.webpQualityInput.value = String(quality);
         dom.webpQualityValue.value = String(quality);
         dom.webpQualityValue.textContent = String(quality);
         dom.backupRetentionInput.value = String(clampInteger(settings.backupRetention ?? settings.backup_retention ?? settings.retention ?? 5, 1, 30));
-        setKeyStatus(Boolean(settings.naiKeyConfigured ?? settings.nai_key_configured ?? settings.hasNaiKey ?? settings.hasKey));
-        dom.naiKeyInput.value = '';
         if (showSuccess) showToast('设置已刷新。', 'success');
     } catch (error) {
         showToast(`读取设置失败：${error.message}`, 'error');
@@ -239,72 +232,22 @@ async function saveSettings(event) {
     event.preventDefault();
     const retention = clampInteger(dom.backupRetentionInput.value, 1, 30);
     const payload = {
-        provider: dom.providerSelect.value,
         webpQuality: clampInteger(dom.webpQualityInput.value, 1, 100) / 100,
         backupRetention: Math.min(30, retention)
     };
-    const key = dom.naiKeyInput.value.trim();
     setButtonBusy(dom.saveSettingsButton, true, '保存中...');
     setFormMessage(dom.settingsMessage, '正在保存设置...', '');
     try {
         const result = await apiJson(API.settings, { method: 'PUT', body: payload });
-        if (key) {
-            await apiJson(API.settingsKey, { method: 'PUT', body: { key } });
-        }
-        dom.naiKeyInput.value = '';
         const settings = result.settings || result;
         state.settings = { ...(state.settings || {}), ...settings };
-        if (key || settings.naiKeyConfigured || settings.hasNaiKey) setKeyStatus(true);
-        setFormMessage(dom.settingsMessage, '设置已保存，NAI Key 明文未回显。', 'success');
+        setFormMessage(dom.settingsMessage, '设置已保存。', 'success');
         showToast('设置已保存。', 'success');
     } catch (error) {
         setFormMessage(dom.settingsMessage, error.message, 'error');
     } finally {
-        dom.naiKeyInput.value = '';
         setButtonBusy(dom.saveSettingsButton, false);
     }
-}
-
-async function testNaiKey() {
-    const key = dom.naiKeyInput.value.trim();
-    setButtonBusy(dom.testKeyButton, true, '测试中...');
-    try {
-        const payload = { provider: dom.providerSelect.value };
-        if (key) payload.key = key;
-        const result = await apiJson(API.settingsTest, { method: 'POST', body: payload });
-        const test = result.test || result;
-        if (test.valid === false || test.success === false) throw new Error(test.message || 'NAI Key 测试失败。');
-        const quotaText = Number.isFinite(Number(test.quota)) ? `，额度 ${test.quota}` : '';
-        showToast(test.message || `NAI Key 可用${quotaText}。`, 'success');
-    } catch (error) {
-        showToast(error.message, 'error');
-    } finally {
-        dom.naiKeyInput.value = '';
-        setButtonBusy(dom.testKeyButton, false);
-    }
-}
-
-async function deleteNaiKey() {
-    if (!window.confirm('确定删除 Worker 中保存的 NAI Key？此操作不可撤销。')) return;
-    let deleted = false;
-    setButtonBusy(dom.deleteKeyButton, true, '删除中...');
-    try {
-        await apiJson(API.settingsKey, { method: 'DELETE' });
-        dom.naiKeyInput.value = '';
-        deleted = true;
-        showToast('NAI Key 已删除。', 'success');
-    } catch (error) {
-        showToast(error.message, 'error');
-    } finally {
-        setButtonBusy(dom.deleteKeyButton, false);
-        if (deleted) setKeyStatus(false);
-    }
-}
-
-function setKeyStatus(configured) {
-    dom.keyStatusBadge.textContent = configured ? '已配置' : '未配置';
-    dom.keyStatusBadge.className = `status-badge ${configured ? 'success' : 'neutral'}`;
-    dom.deleteKeyButton.disabled = !configured;
 }
 
 async function loadImages(showSuccess = false) {
@@ -429,6 +372,8 @@ function createImageCard(image) {
     );
     const actions = element('div', 'image-actions');
     actions.append(
+        createDownloadButton('下载原图', image, 'original', !image.originalExists),
+        createDownloadButton('下载 WebP', image, 'webp', !image.webpExists),
         createDeleteButton('删原图', image, 'original', !image.originalExists),
         createDeleteButton('删 WebP', image, 'webp', !image.webpExists),
         createDeleteButton('删除全部', image, 'all', false, true)
@@ -469,6 +414,18 @@ function createDeleteButton(label, image, target, disabled, dangerous = false) {
         }
     });
     return button;
+}
+
+function createDownloadButton(label, image, kind, disabled) {
+    const link = element('a', 'button secondary', label);
+    link.href = disabled ? '#' : getImageUrl(image, kind);
+    link.download = `${image.characterName}-${image.hash}.${kind === 'webp' ? 'webp' : 'image'}`;
+    link.setAttribute('role', 'button');
+    if (disabled) {
+        link.setAttribute('aria-disabled', 'true');
+        link.addEventListener('click', (event) => event.preventDefault());
+    }
+    return link;
 }
 
 function getImageUrl(image, kind) {
@@ -587,7 +544,10 @@ async function createBrowserBackup() {
         const stats = { recordCount: 0, totalBytes: 0 };
         const chunks = [];
         host = await requestHostFlushAndPause();
-        if (!host.responded) throw new Error('未收到 RP-Hub 宿主响应，请保持 RP-Hub 标签页打开后重试。');
+        if (!host.responded) {
+            const proceed = window.confirm('当前 RP-Hub 未提供备份暂停接口。请先关闭其他 RP-Hub 标签页，避免备份过程中数据继续变化；确认已关闭后点击“确定”继续。');
+            if (!proceed) throw new Error('已取消备份。');
+        }
         stagingDb = await openStagingDb();
         await clearStaging(stagingDb);
         for await (const chunk of iterateSnapshotChunks(stats, siteOrigin)) {

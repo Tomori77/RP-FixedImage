@@ -64,10 +64,15 @@ const assetRequests = [];
 const env = {
     RP_IMAGE_R2: bucket,
     RP_IMAGE_ADMIN_PASSWORD: 'test-password',
-    RP_IMAGE_MASTER_KEY: 'test-master-key',
     ASSETS: {
         fetch: async (request) => {
-            assetRequests.push(new URL(request.url).pathname);
+            const pathname = new URL(request.url).pathname;
+            assetRequests.push(pathname);
+            if (pathname === '/') {
+                return new Response('<!doctype html><html><body>RP Hub</body></html>', {
+                    headers: { 'content-type': 'text/html; charset=utf-8' }
+                });
+            }
             return new Response('asset');
         }
     }
@@ -75,18 +80,25 @@ const env = {
 const origin = 'https://rp.example.com';
 const originalFetch = globalThis.fetch;
 let upstreamCalls = 0;
+let lastUpstreamUrl = null;
+let lastAccountBody = '';
 
-globalThis.fetch = async (input) => {
+globalThis.fetch = async (input, init = {}) => {
     const url = input instanceof URL
         ? input
         : new URL(typeof input === 'string' ? input : input.url);
     if (url.hostname === 'nai.sta1n.cn' && url.pathname === '/generate') {
         upstreamCalls += 1;
+        lastUpstreamUrl = url;
         return new Response(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]), {
             headers: { 'content-type': 'image/png' }
         });
     }
     if (url.hostname === 'nai.sta1n.cn' && url.pathname === '/api/api/getUser') {
+        if (init.body instanceof ArrayBuffer) lastAccountBody = new TextDecoder().decode(init.body);
+        else if (ArrayBuffer.isView(init.body)) lastAccountBody = new TextDecoder().decode(init.body);
+        else if (typeof init.body === 'string') lastAccountBody = init.body;
+        else if (typeof input !== 'string' && !(input instanceof URL)) lastAccountBody = await input.clone().text();
         return Response.json({ status: 'ok', success: true, type: 'sta1n', data: { value: 100 } });
     }
     return originalFetch(input);
@@ -111,6 +123,10 @@ try {
     assert(adminPage.ok && await adminPage.text() === 'asset', 'admin page was not served as a static asset');
     assert(assetRequests.at(-1) === '/rp-image/', 'admin page was rewritten to index.html and may redirect loop');
 
+    const rpHubPage = await request('/');
+    const rpHubHtml = await rpHubPage.text();
+    assert(rpHubHtml.includes('<script src="/rp-image/bridge.js" defer></script>'), 'RP-Hub HTML did not load the WebP bridge');
+
     const login = await request('/rp-image/api/auth/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -126,41 +142,71 @@ try {
     });
     assert(settings.ok, 'settings save failed');
 
-    const keySave = await request('/rp-image/api/settings/nai-key', {
+    const removedKeyEndpoint = await request('/rp-image/api/settings/nai-key', {
         method: 'PUT',
         headers: { cookie, 'content-type': 'application/json' },
-        body: JSON.stringify({ key: 'NAI-SECRET-TEST' })
+        body: JSON.stringify({ key: 'SHOULD-NOT-BE-STORED' })
     });
-    assert(keySave.ok, 'NAI key save failed');
-    const encrypted = await bucket.get('RP-image/config/nai-key.json');
-    assert(encrypted && !(await encrypted.text()).includes('NAI-SECRET-TEST'), 'NAI key was stored in plaintext');
+    assert(removedKeyEndpoint.status === 404, 'removed NAI key endpoint is still available');
 
-    const imageParams = new URLSearchParams({
-        character_name: 'Alice',
-        character_uuid: '123e4567-e89b-12d3-a456-426614174000',
-        tag: '1girl, blue hair',
+    const accountBody = JSON.stringify({ toUserId: 'BROWSER-NAI-TOKEN' });
+    const accountResponse = await request('/api/api/getUser', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: accountBody
+    });
+    const accountData = await accountResponse.json();
+    assert(accountResponse.ok && accountData.data.value === 100, 'NAI account proxy failed');
+    assert(lastAccountBody === accountBody, 'NAI account request body was not forwarded unchanged');
+
+    const legacyParams = new URLSearchParams({
+        tag: '1girl, red hair & blue eyes',
+        token: 'BROWSER-NAI-TOKEN',
+        character_name: 'Alice / 测试',
         model: 'nai-diffusion-4-5-full',
-        size: '竖图'
+        artist: 'masterpiece, best quality',
+        size: '竖图',
+        steps: '40',
+        scale: '6',
+        cfg: '0',
+        sampler: 'k_dpmpp_2m_sde',
+        negative: 'bad anatomy',
+        nocache: '0',
+        noise_schedule: 'karras'
     });
-    const imagePath = `/rp-image/api/render?${imageParams}`;
-    const firstImage = await request(imagePath, { headers: { cookie } });
-    assert(firstImage.ok && firstImage.headers.get('x-rp-image-cache') === 'MISS', 'first image was not a MISS');
-    assert(upstreamCalls === 1, 'upstream should be called once');
+    const legacyPath = `/generate?${legacyParams}`;
+    const legacyFirst = await request(legacyPath);
+    assert(legacyFirst.ok && legacyFirst.headers.get('x-rp-image-cache') === 'MISS', 'legacy proxy did not generate');
+    assert(upstreamCalls === 1, 'legacy proxy did not call upstream exactly once');
+    const expectedUpstreamParams = new URLSearchParams(legacyParams);
+    expectedUpstreamParams.delete('character_name');
+    assert(lastUpstreamUrl.search === `?${expectedUpstreamParams}`, 'legacy proxy did not forward NAI parameters unchanged');
+    assert(!lastUpstreamUrl.searchParams.has('character_name'), 'local character name was forwarded to NAI');
 
-    const secondImage = await request(imagePath);
-    assert(secondImage.ok && secondImage.headers.get('x-rp-image-cache') === 'ORIGINAL', 'original cache was not used');
-    assert(upstreamCalls === 1, 'original cache unexpectedly called upstream');
+    const cachedParams = new URLSearchParams(legacyParams);
+    cachedParams.set('token', 'DIFFERENT-TOKEN');
+    const legacySecond = await request(`/generate?${cachedParams}`);
+    assert(legacySecond.ok && legacySecond.headers.get('x-rp-image-cache') === 'ORIGINAL', 'legacy proxy cache was not used');
+    assert(upstreamCalls === 1, 'token unexpectedly changed the cache key');
+
+    const characterPrefix = 'RP-image/image/Alice-测试--00000000-0000-4000-8000-000000000000/';
+    assert([...bucket.objects.keys()].some((key) => key.startsWith(characterPrefix)), 'legacy proxy did not group images by character name');
+    for (const object of bucket.objects.values()) {
+        assert(!(await object.text()).includes('BROWSER-NAI-TOKEN'), 'browser token was persisted in R2');
+    }
 
     const fakeWebp = new Uint8Array([82, 73, 70, 70, 4, 0, 0, 0, 87, 69, 66, 80, 1, 2, 3, 4]);
-    const webpSave = await request(`/rp-image/api/webp?${imageParams}`, {
+    const webpParams = new URLSearchParams(legacyParams);
+    webpParams.delete('token');
+    const webpSave = await request(`/rp-image/api/webp?${webpParams}`, {
         method: 'PUT',
-        headers: { cookie, 'content-type': 'image/webp' },
+        headers: { 'content-type': 'image/webp' },
         body: fakeWebp
     });
-    assert(webpSave.ok, 'WebP save failed');
+    assert(webpSave.ok, 'browser WebP upload failed');
 
-    const thirdImage = await request(imagePath);
-    assert(thirdImage.ok && thirdImage.headers.get('x-rp-image-cache') === 'WEBP', 'WebP cache was not preferred');
+    const legacyThird = await request(legacyPath);
+    assert(legacyThird.ok && legacyThird.headers.get('x-rp-image-cache') === 'WEBP', 'WebP cache was not preferred');
     assert(upstreamCalls === 1, 'WebP cache unexpectedly called upstream');
 
     const chunkBytes = new TextEncoder().encode('{"type":"snapshot"}\n');

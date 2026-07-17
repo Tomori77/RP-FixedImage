@@ -139,7 +139,6 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
 .backup-item-actions .button { min-height: 35px; padding: 0 10px; font-size: 12px; }
 
 .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
-.key-card { grid-row: span 2; }
 .settings-submit-row { grid-column: 1 / -1; display: flex; align-items: center; justify-content: flex-end; gap: 18px; }
 .settings-submit-row .form-message { flex: 1; margin: 0; text-align: right; }
 
@@ -167,7 +166,6 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
 
 @media (max-width: 900px) {
     .backup-layout, .settings-grid { grid-template-columns: 1fr; }
-    .key-card { grid-row: auto; }
     .settings-submit-row { grid-column: auto; }
 }
 

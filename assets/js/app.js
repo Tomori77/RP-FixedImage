@@ -1,7 +1,3 @@
-void import('/rp-image/bridge.js').catch((error) => {
-    console.warn('[RP-FixedImage] 图片桥接脚本加载失败:', error);
-});
-
 const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } = Vue;
 
 // Configure marked to disable indented code blocks
@@ -87,9 +83,7 @@ createApp({
         const systemRegexNames = ['Auto Replace {{user}}', 'NAI画图正则'];
         const systemWorldInfoNames = ['自动生图'];
 
-        const FIXED_IMAGE_RENDER_PATH = '/rp-image/api/render';
-        const FIXED_IMAGE_PROMPT_PLACEHOLDER = '__RP_IMAGE_PROMPT__';
-        const IMAGE_GEN_NEGATIVE_PROMPT = '{{{{bad anatomy}}}},{bad feet},bad hands,{{{bad proportions}}},{blurry},cloned face,cropped,{{{deformed}}},{{{disfigured}}},error,{{{extra arms}}},{extra digit},{{{extra legs}}},extra limbs,{{extra limbs}},{fewer digits},{{{fused fingers}}},gross proportions,ink eyes,ink hair,jpeg artifacts,{{{{long neck}}}},low quality,{malformed limbs},{{missing arms}},{missing fingers},{{missing legs}},{{{more than 2 nipples}}},mutated hands,{{{mutation}}},normal quality,owres,{{poorly drawn face}},{{poorly drawn hands}},reen eyes,signature,text,{{too many fingers}},{{{ugly}}},username,uta,watermark,worst quality,{{{more than 2 legs}}},awkward hand sign,weird hand gesture,contorted hand,unnatural finger pose,deformed hand gesture,{shaka},{hang loose},{{rock on}},{shaka sign}';
+        const IMAGE_GEN_BASE_URL = 'https://nai.sta1n.cn';
 
         // --- Default API Configuration ---
         const DEFAULT_API_PROVIDER_ID = 'sta1n';
@@ -199,16 +193,21 @@ createApp({
             quotaLoading.value = true;
             quotaError.value = false;
             try {
-                const response = await fetch('/rp-image/api/settings/nai-key/test', {
+                const imageGenToken = settings.imageGenKey.trim();
+                if (!imageGenToken) {
+                    quotaValue.value = 0;
+                    quotaAvailable.value = false;
+                    return;
+                }
+                const baseUrl = IMAGE_GEN_BASE_URL;
+                const response = await fetch(`${baseUrl}/api/api/getUser`, {
                     method: 'POST',
-                    credentials: 'same-origin',
-                    cache: 'no-store',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({})
+                    body: JSON.stringify({ toUserId: imageGenToken })
                 });
                 const data = await response.json();
-                if (response.ok && data.ok && data.test?.valid) {
-                    const val = Number.parseInt(data.test.quota, 10);
+                if (data.status === 'ok' && data.type === 'sta1n') {
+                    const val = Number.parseInt(data.data?.value, 10);
                     if (!Number.isFinite(val)) throw new Error('Invalid quota value');
                     quotaValue.value = val;
                     quotaAvailable.value = val > 0;
@@ -1714,7 +1713,6 @@ createApp({
         const dbVersion = 1;
         let db = null;
         let legacyDb = null;
-        let fixedImagePersistencePaused = false;
 
         const openAppDB = (name) => {
             return new Promise((resolve, reject) => {
@@ -1805,7 +1803,6 @@ createApp({
 
         const dbSetTo = (targetDb, key, value, options = {}) => {
             return new Promise((resolve, reject) => {
-                if (fixedImagePersistencePaused) return resolve();
                 if (!targetDb) return reject('DB not initialized');
                 const transaction = targetDb.transaction(['store'], 'readwrite');
                 const store = transaction.objectStore('store');
@@ -1941,7 +1938,6 @@ createApp({
         };
         let tokenUsageSaveQueue = Promise.resolve();
         const saveTokenUsageHistoryNow = () => {
-            if (fixedImagePersistencePaused) return Promise.resolve();
             const snapshot = cloneForStorage(tokenUsageHistory.value);
             const saveTask = async () => {
                 if (!db) await initDB();
@@ -1989,7 +1985,6 @@ createApp({
                 clearTimeout(chatHistorySaveTimer);
                 chatHistorySaveTimer = null;
             }
-            if (fixedImagePersistencePaused) return Promise.resolve(false);
             const characterId = currentCharacter.value?.uuid;
             if (currentCharacterIndex.value < 0 || !characterId) return Promise.resolve(false);
 
@@ -2063,7 +2058,6 @@ createApp({
         };
 
         const saveData = async (options = {}) => {
-            if (fixedImagePersistencePaused) return;
             const { saveMemories = true } = options;
             try {
                 if (!db) await initDB();
@@ -2109,7 +2103,6 @@ createApp({
         };
 
         const saveConversationMutationNow = async ({ saveTemplateRuntime = false } = {}) => {
-            if (fixedImagePersistencePaused) return;
             try {
                 if (!db) await initDB();
                 await saveChatHistoryNow();
@@ -2126,7 +2119,6 @@ createApp({
 
         const dbDeleteFrom = (targetDb, key) => {
             return new Promise((resolve, reject) => {
-                if (fixedImagePersistencePaused) return resolve();
                 if (!targetDb) return resolve();
                 const transaction = targetDb.transaction(['store'], 'readwrite');
                 const store = transaction.objectStore('store');
@@ -2469,8 +2461,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             if (newReplacement === oldReplacement) {
                 newReplacement = oldReplacement.replace(/artist=[^&]+/, 'artist=' + encodedTargetArtists);
             }
-            const encodedImageSize = encodeURIComponent(settings.imageSize);
-            newReplacement = newReplacement.replace(/size=[^&]+/, 'size=' + encodedImageSize);
+            newReplacement = newReplacement.replace(/size=[^&]+/, 'size=' + settings.imageSize);
             regex.replacement = newReplacement;
 
             let messages = [];
@@ -2481,7 +2472,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             }
             // 检查 Size 变化
             const oldSize = oldReplacement.match(/size=([^&]+)/)?.[1];
-            if (oldSize !== encodedImageSize) {
+            if (oldSize !== settings.imageSize) {
                 messages.push(`比例: ${settings.imageSize}`);
             }
 
@@ -2573,26 +2564,6 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         const currentCharacter = computed(() => {
             return currentCharacterIndex.value >= 0 ? characters.value[currentCharacterIndex.value] : null;
         });
-        const buildFixedImageUrl = ({ prompt, artist, size } = {}) => {
-            const character = currentCharacter.value;
-            if (!character?.uuid) return '';
-
-            const url = new URL(FIXED_IMAGE_RENDER_PATH, window.location.origin);
-            url.searchParams.set('character_name', character.name || '未命名角色');
-            url.searchParams.set('character_uuid', character.uuid);
-            url.searchParams.set('tag', prompt || FIXED_IMAGE_PROMPT_PLACEHOLDER);
-            url.searchParams.set('model', 'nai-diffusion-4-5-full');
-            url.searchParams.set('artist', artist || '');
-            url.searchParams.set('size', size || settings.imageSize);
-            url.searchParams.set('steps', '40');
-            url.searchParams.set('scale', '6');
-            url.searchParams.set('cfg', '0');
-            url.searchParams.set('sampler', 'k_dpmpp_2m_sde');
-            url.searchParams.set('negative', IMAGE_GEN_NEGATIVE_PROMPT);
-            url.searchParams.set('nocache', '0');
-            url.searchParams.set('noise_schedule', 'karras');
-            return url.href;
-        };
         const scopeOptions = computed(() => [
             { value: 'character', label: '绑定当前角色卡', disabled: !currentCharacter.value },
             { value: 'global', label: '全局生效' }
@@ -3877,15 +3848,6 @@ ${content}
                     }
 
                     const re = new RegExp(regexPattern, flags);
-                    const replaceText = (input) => {
-                        if ((script.name || script.scriptName) !== 'NAI画图正则') {
-                            return input.replace(re, replacement);
-                        }
-                        return input.replace(re, (match, prompt) => String(replacement).replace(
-                            encodeURIComponent(FIXED_IMAGE_PROMPT_PLACEHOLDER),
-                            encodeURIComponent(String(prompt || '').trim())
-                        ));
-                    };
 
                     // --- Protection Logic Start ---
                     // 只有当正则不包含 < 或 > 且不包含 markdown 代码块标记 (```) 时，才启用 HTML/代码块保护
@@ -3906,11 +3868,11 @@ ${content}
                                 return part; // 保持原样
                             }
                             // 对普通文本应用替换
-                            return replaceText(part);
+                            return part.replace(re, replacement);
                         }).join('');
                     } else {
                         // 如果正则明确包含 <, > 或 ```，说明用户意图直接操作 HTML 或 Markdown 代码块，因此跳过保护直接替换
-                        result = replaceText(result);
+                        result = result.replace(re, replacement);
                     }
                     // --- Protection Logic End ---
 
@@ -4409,13 +4371,13 @@ ${content}
                 const id = setTimeout(() => controller.abort(), 10000);
                 const startTime = performance.now();
 
-                const response = await fetch('/rp-image/api/settings/public', {
-                    method: 'GET',
-                    credentials: 'same-origin',
-                    cache: 'no-store',
+                const baseUrl = IMAGE_GEN_BASE_URL;
+
+                await fetch(baseUrl, {
+                    method: 'HEAD',
+                    mode: 'no-cors',
                     signal: controller.signal
                 });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 clearTimeout(id);
                 const endTime = performance.now();
 
@@ -9358,6 +9320,9 @@ ${content}
         };
 
         const enforceSpecialRules = () => {
+            const imageGenToken = settings.imageGenKey.trim();
+            const baseUrl = IMAGE_GEN_BASE_URL;
+
             // 1. NAI画图正则 (统一版本)
             const imageGenRegexName = 'NAI画图正则';
             const defaultArtists = 'masterpiece, best quality,[[[artist:dishwasher1910]]], {{yd_(orange_maru)}}, [artist:ciloranko], [artist:sho_(sho_lwlw)], [ningen mame], soft lighting,year 2024';
@@ -9393,15 +9358,11 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                 targetArtists = settings.customImageArtists || '';
             }
 
-            const imageSourceUrl = buildFixedImageUrl({
-                prompt: FIXED_IMAGE_PROMPT_PLACEHOLDER,
-                artist: targetArtists,
-                size: settings.imageSize
-            });
+            const encodedTargetArtists = encodeURIComponent(targetArtists);
             const imageGenRegexContent = {
                 name: imageGenRegexName,
                 regex: '/image###([\\s\\S]*?)###/g',
-                replacement: '<div style="width: auto; height: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(255,255,255,0.32); position: relative; border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06);"><img src="' + imageSourceUrl + '" alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;"></div>',
+                replacement: '<div style="width: auto; height: auto; max-width: 100%; box-sizing: border-box; padding: 2px; border: 1px solid rgba(255,255,255,0.58); background: rgba(255,255,255,0.32); position: relative; border-radius: 12px; overflow: hidden; display: inline-flex; justify-content: center; align-items: center; box-shadow: 0 4px 14px rgba(148,163,184,0.06);"><img src="' + baseUrl + '/generate?tag=$1&token=' + imageGenToken + '&model=nai-diffusion-4-5-full&artist=' + encodedTargetArtists + '&size=' + settings.imageSize + '&steps=40&scale=6&cfg=0&sampler=k_dpmpp_2m_sde&negative={{{{bad anatomy}}}},{bad feet},bad hands,{{{bad proportions}}},{blurry},cloned face,cropped,{{{deformed}}},{{{disfigured}}},error,{{{extra arms}}},{extra digit},{{{extra legs}}},extra limbs,{{extra limbs}},{fewer digits},{{{fused fingers}}},gross proportions,ink eyes,ink hair,jpeg artifacts,{{{{long neck}}}},low quality,{malformed limbs},{{missing arms}},{missing fingers},{{missing legs}},{{{more than 2 nipples}}},mutated hands,{{{mutation}}},normal quality,owres,{{poorly drawn face}},{{poorly drawn hands}},reen eyes,signature,text,{{too many fingers}},{{{ugly}}},username,uta,watermark,worst quality,{{{more than 2 legs}}},awkward hand sign,weird hand gesture,contorted hand,unnatural finger pose,deformed hand gesture,{shaka},{hang loose},{{rock on}},{shaka sign}&nocache=0&noise_schedule=karras"  alt="生成图片" style="max-width: 100%; height: auto; width: auto; display: block; object-fit: contain; border-radius: 9px; transition: transform 0.3s ease;"></div>',
                 placement: [2],
                 markdownOnly: true,
                 promptOnly: false,
@@ -9521,26 +9482,7 @@ image###生成的提示词###
 
         };
 
-        window.RPH_BACKUP_HOST = {
-            flush: async () => {
-                await saveData();
-                await flushPendingChatHistorySave();
-            },
-            pause: async () => {
-                fixedImagePersistencePaused = true;
-            },
-            resume: async () => {
-                fixedImagePersistencePaused = false;
-            },
-            reload: async () => window.location.reload()
-        };
-
-        watch(() => settings.imageGenKey, (value) => {
-            if (String(value || '').trim()) {
-                settings.imageGenKey = '';
-                showToast('NAI Key 请前往 /rp-image 管理台配置，RP-Hub 不再保存该密钥', 'info', 5000);
-                return;
-            }
+        watch(() => settings.imageGenKey, () => {
             enforceSpecialRules();
             if (isAutoImageGenEnabled.value) {
                 updateImageGenRegexState({ enableRegex: true });

@@ -135,30 +135,11 @@
                     <div>
                         <p class="eyebrow">Worker Settings</p>
                         <h2>设置</h2>
-                        <p class="muted">密钥明文不会从 Worker 回显到本页面。</p>
+                        <p class="muted">配置图片压缩质量和浏览器备份保留数量。</p>
                     </div>
                 </div>
 
                 <form id="settingsForm" class="settings-grid">
-                    <section class="card settings-card key-card">
-                        <div class="card-heading">
-                            <div>
-                                <p class="eyebrow">NovelAI</p>
-                                <h3>NAI Key</h3>
-                            </div>
-                            <span id="keyStatusBadge" class="status-badge neutral">未知</span>
-                        </div>
-                        <label class="field">
-                            <span>新 Key</span>
-                            <input id="naiKeyInput" type="password" autocomplete="new-password" placeholder="留空表示不修改现有 Key">
-                            <small>保存或测试后会立即清空输入框，不回显服务端明文。</small>
-                        </label>
-                        <div class="button-row">
-                            <button id="testKeyButton" class="button secondary" type="button">测试 Key</button>
-                            <button id="deleteKeyButton" class="button danger" type="button">删除 Key</button>
-                        </div>
-                    </section>
-
                     <section class="card settings-card">
                         <div class="card-heading">
                             <div>
@@ -166,13 +147,6 @@
                                 <h3>图片处理</h3>
                             </div>
                         </div>
-                        <label class="field">
-                            <span>Provider</span>
-                            <select id="providerSelect">
-                                <option value="sta1n">sta1n</option>
-                                <option value="std">std</option>
-                            </select>
-                        </label>
                         <label class="field">
                             <span>WebP Quality <output id="webpQualityValue">82</output></span>
                             <input id="webpQualityInput" type="range" min="1" max="100" step="1" value="82">

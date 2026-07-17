@@ -12,6 +12,5 @@ run_worker_first = true
 binding = "RP_IMAGE_R2"
 bucket_name = "rp-fiamge"
 
-# Configure secrets with Cloudflare Pages/Workers instead of storing them here:
+# Configure this secret with Cloudflare instead of storing it here:
 # RP_IMAGE_ADMIN_PASSWORD
-# RP_IMAGE_MASTER_KEY

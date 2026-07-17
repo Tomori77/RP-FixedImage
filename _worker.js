@@ -1,16 +1,16 @@
 const API_PREFIX = '/rp-image/api';
 const R2_BINDING = 'RP_IMAGE_R2';
 const ADMIN_PASSWORD_ENV = 'RP_IMAGE_ADMIN_PASSWORD';
-const MASTER_KEY_ENV = 'RP_IMAGE_MASTER_KEY';
 const SESSION_COOKIE = 'rp_image_session';
 const SESSION_SECONDS = 30 * 24 * 60 * 60;
 
 const ROOT_PREFIX = 'RP-image';
 const SETTINGS_KEY = `${ROOT_PREFIX}/config/settings.json`;
-const NAI_KEY_OBJECT = `${ROOT_PREFIX}/config/nai-key.json`;
 const IMAGE_PREFIX = `${ROOT_PREFIX}/image`;
 const CACHE_PREFIX = `${ROOT_PREFIX}/Cache`;
 const BACKUP_PREFIX = `${ROOT_PREFIX}/save`;
+const SHARED_CHARACTER_NAME = '公共缓存';
+const SHARED_CHARACTER_UUID = '00000000-0000-4000-8000-000000000000';
 
 const MAX_JSON_BYTES = 128 * 1024;
 const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
@@ -20,7 +20,6 @@ const MAX_BACKUP_TOTAL_BYTES = 1024 * 1024 * 1024;
 const MAX_BACKUP_CHUNKS = 256;
 const MAX_LIST_OBJECTS = 20000;
 const UPSTREAM_TIMEOUT_MS = 120000;
-const KEY_TEST_TIMEOUT_MS = 20000;
 const imageGenerationRuns = new Map();
 
 const PROVIDERS = Object.freeze({
@@ -56,7 +55,8 @@ const IMAGE_QUERY_NAMES = new Set([
     'characterName',
     'character_uuid',
     'characterUuid',
-    'uuid'
+    'uuid',
+    'token'
 ]);
 
 class HttpError extends Error {
@@ -115,14 +115,6 @@ function requireAdminPassword(env) {
         throw new HttpError(503, `Missing Secret: ${ADMIN_PASSWORD_ENV}.`, 'admin_password_not_configured');
     }
     return password;
-}
-
-function requireMasterKey(env) {
-    const key = getSecret(env, MASTER_KEY_ENV);
-    if (!key) {
-        throw new HttpError(503, `Missing Secret: ${MASTER_KEY_ENV}.`, 'master_key_not_configured');
-    }
-    return key;
 }
 
 function bytesToHex(bytes) {
@@ -323,66 +315,6 @@ async function saveSettings(bucket, settings) {
     });
 }
 
-async function importEncryptionKey(masterSecret) {
-    const material = await crypto.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(`rp-image-master-v1\0${masterSecret}`)
-    );
-    return crypto.subtle.importKey('raw', material, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
-}
-
-async function encryptNaiKey(plainText, masterSecret) {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const additionalData = new TextEncoder().encode(NAI_KEY_OBJECT);
-    const ciphertext = await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv, additionalData, tagLength: 128 },
-        await importEncryptionKey(masterSecret),
-        new TextEncoder().encode(plainText)
-    );
-    return {
-        version: 1,
-        algorithm: 'AES-GCM',
-        iv: base64UrlEncode(iv),
-        ciphertext: base64UrlEncode(new Uint8Array(ciphertext)),
-        updatedAt: new Date().toISOString()
-    };
-}
-
-async function decryptNaiKey(bucket, env) {
-    const object = await bucket.get(NAI_KEY_OBJECT);
-    if (!object) throw new HttpError(503, 'NAI Key has not been configured.', 'nai_key_not_configured');
-    let encrypted;
-    try {
-        encrypted = JSON.parse(await object.text());
-    } catch (error) {
-        throw new HttpError(500, 'Encrypted NAI Key is invalid.', 'nai_key_corrupt');
-    }
-    if (encrypted?.version !== 1
-        || encrypted?.algorithm !== 'AES-GCM'
-        || typeof encrypted.iv !== 'string'
-        || typeof encrypted.ciphertext !== 'string') {
-        throw new HttpError(500, 'Encrypted NAI Key is invalid.', 'nai_key_corrupt');
-    }
-    try {
-        const clear = await crypto.subtle.decrypt(
-            {
-                name: 'AES-GCM',
-                iv: base64UrlDecode(encrypted.iv),
-                additionalData: new TextEncoder().encode(NAI_KEY_OBJECT),
-                tagLength: 128
-            },
-            await importEncryptionKey(requireMasterKey(env)),
-            base64UrlDecode(encrypted.ciphertext)
-        );
-        const value = new TextDecoder().decode(clear);
-        if (!value) throw new Error('empty key');
-        return value;
-    } catch (error) {
-        if (error instanceof HttpError) throw error;
-        throw new HttpError(500, 'NAI Key decryption failed.', 'nai_key_decryption_failed');
-    }
-}
-
 async function objectExists(bucket, key) {
     if (typeof bucket.head === 'function') return Boolean(await bucket.head(key));
     return Boolean(await bucket.get(key));
@@ -469,9 +401,10 @@ function normalizeImageParameter(name, rawValue, rule) {
     return value;
 }
 
-function buildImageRequest(url, settings) {
+function buildImageRequest(url, settings, { legacy = false } = {}) {
     for (const [name] of url.searchParams) {
         if (name === 'token') {
+            if (legacy) continue;
             throw new HttpError(400, 'token must never be placed in the request URL.', 'token_in_url');
         }
         if (!IMAGE_QUERY_NAMES.has(name)) {
@@ -482,18 +415,25 @@ function buildImageRequest(url, settings) {
         }
     }
 
-    const characterName = getSingleAlias(url.searchParams, ['character_name', 'characterName'], 'character name');
-    if (!characterName || characterName.length > 200) {
+    const requestedCharacterName = getSingleAlias(
+        url.searchParams,
+        ['character_name', 'characterName'],
+        'character name'
+    );
+    if ((!legacy && !requestedCharacterName) || requestedCharacterName.length > 200) {
         throw new HttpError(400, 'character_name is required and must be at most 200 characters.', 'invalid_character_name');
     }
-    const characterUuid = getSingleAlias(
-        url.searchParams,
-        ['character_uuid', 'characterUuid', 'uuid'],
-        'character UUID'
-    );
+    const characterName = requestedCharacterName || SHARED_CHARACTER_NAME;
+    const characterUuid = legacy
+        ? SHARED_CHARACTER_UUID
+        : getSingleAlias(
+            url.searchParams,
+            ['character_uuid', 'characterUuid', 'uuid'],
+            'character UUID'
+        );
     const characterDir = buildCharacterDirectory(characterName, characterUuid);
 
-    const requestedProvider = String(url.searchParams.get('provider') || settings.provider).trim().toLowerCase();
+    const requestedProvider = String(url.searchParams.get('provider') || (legacy ? 'sta1n' : settings.provider)).trim().toLowerCase();
     if (!Object.hasOwn(PROVIDERS, requestedProvider)) {
         throw new HttpError(400, 'provider must be sta1n or std.', 'invalid_provider');
     }
@@ -502,7 +442,11 @@ function buildImageRequest(url, settings) {
     for (const [name, rule] of Object.entries(IMAGE_PARAM_RULES)) {
         params[name] = normalizeImageParameter(name, url.searchParams.get(name), rule);
     }
-    return { characterName, characterUuid: normalizeUuid(characterUuid), characterDir, params };
+    const token = legacy ? String(url.searchParams.get('token') || '') : '';
+    if (legacy && token.length > 2000) {
+        throw new HttpError(400, 'token is too long.', 'invalid_token');
+    }
+    return { characterName, characterUuid: normalizeUuid(characterUuid), characterDir, params, token };
 }
 
 async function imageHash(params) {
@@ -549,13 +493,13 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     }
 }
 
-async function generateImage(params, naiKey) {
+async function generateImageFromOriginalRequest(url, params, token) {
+    if (!token) throw new HttpError(400, 'token is required on a cache miss.', 'token_required');
     const upstream = new URL('/generate', PROVIDERS[params.provider]);
-    for (const [name, value] of Object.entries(params)) {
-        if (name !== 'provider' && name !== 'reroll_nonce') upstream.searchParams.set(name, value);
+    upstream.search = url.search;
+    for (const name of ['provider', 'character_name', 'characterName', 'character_uuid', 'characterUuid', 'uuid']) {
+        upstream.searchParams.delete(name);
     }
-    upstream.searchParams.set('token', naiKey);
-
     const response = await fetchWithTimeout(upstream, {
         method: 'GET',
         headers: {
@@ -564,17 +508,12 @@ async function generateImage(params, naiKey) {
         },
         redirect: 'error'
     }, UPSTREAM_TIMEOUT_MS);
-
     if (!response.ok) {
         throw new HttpError(502, `Image provider returned HTTP ${response.status}.`, 'upstream_http_error');
     }
     const contentType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     if (!['image/png', 'image/jpeg', 'image/webp', 'image/avif'].includes(contentType)) {
         throw new HttpError(502, 'Image provider did not return an image.', 'upstream_invalid_content');
-    }
-    const declaredLength = Number(response.headers.get('content-length') || 0);
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_IMAGE_BYTES) {
-        throw new HttpError(413, 'Generated image is too large.', 'image_too_large');
     }
     const bytes = await response.arrayBuffer();
     if (!bytes.byteLength || bytes.byteLength > MAX_IMAGE_BYTES) {
@@ -583,11 +522,11 @@ async function generateImage(params, naiKey) {
     return { bytes, contentType };
 }
 
-async function handleRender(request, env, url) {
+async function handleRender(request, env, url, options = {}) {
     if (request.method !== 'GET' && request.method !== 'HEAD') return methodNotAllowed('GET, HEAD');
     const bucket = getBucket(env);
     const settings = await loadSettings(bucket);
-    const imageRequest = buildImageRequest(url, settings);
+    const imageRequest = buildImageRequest(url, settings, options);
     const hash = await imageHash(imageRequest.params);
     const webpKey = webpImageKey(imageRequest.characterDir, hash);
     const originalKey = originalImageKey(imageRequest.characterDir, hash);
@@ -620,12 +559,13 @@ async function handleRender(request, env, url) {
         });
     }
 
-    await requireAdminSession(request, env);
+    if (!options.legacy) {
+        throw new HttpError(400, 'Use /generate or /rp-image/api/generate with a token.', 'token_required');
+    }
     let generation = imageGenerationRuns.get(originalKey);
     if (!generation) {
         generation = (async () => {
-            const naiKey = await decryptNaiKey(bucket, env);
-            const generated = await generateImage(imageRequest.params, naiKey);
+            const generated = await generateImageFromOriginalRequest(url, imageRequest.params, imageRequest.token);
             await bucket.put(originalKey, generated.bytes, {
                 httpMetadata: { contentType: generated.contentType },
                 customMetadata: {
@@ -655,7 +595,6 @@ async function handleRender(request, env, url) {
 
 async function handleWebp(request, env, url) {
     if (request.method !== 'PUT') return methodNotAllowed('PUT');
-    await requireAdminSession(request, env);
     const contentType = (request.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     if (contentType !== 'image/webp') {
         throw new HttpError(415, 'Only image/webp is accepted.', 'invalid_content_type');
@@ -667,7 +606,7 @@ async function handleWebp(request, env, url) {
 
     const bucket = getBucket(env);
     const settings = await loadSettings(bucket);
-    const imageRequest = buildImageRequest(url, settings);
+    const imageRequest = buildImageRequest(url, settings, { legacy: true });
     const hash = await imageHash(imageRequest.params);
     const originalKey = originalImageKey(imageRequest.characterDir, hash);
     if (!await objectExists(bucket, originalKey)) {
@@ -866,34 +805,6 @@ async function handleImageDelete(request, env, url) {
     return json({ ok: true, deletedCopies: existence.filter(Boolean).length, characterDir, hash, copy });
 }
 
-async function testNaiKey(provider, key) {
-    const endpoint = new URL('/api/api/getUser', PROVIDERS[provider]);
-    const response = await fetchWithTimeout(endpoint, {
-        method: 'POST',
-        headers: {
-            accept: 'application/json',
-            'content-type': 'application/json; charset=utf-8',
-            'user-agent': 'RP-FixedImage-Worker/1.0'
-        },
-        body: JSON.stringify({ toUserId: key }),
-        redirect: 'error'
-    }, KEY_TEST_TIMEOUT_MS);
-    let data = null;
-    try {
-        data = await response.json();
-    } catch (error) {
-        data = null;
-    }
-    const valid = response.ok && Boolean(data) && (data.status === 'ok' || data.success === true);
-    return {
-        provider,
-        valid,
-        upstreamStatus: response.status,
-        accountType: typeof data?.type === 'string' ? data.type.slice(0, 64) : null,
-        quota: Number.isFinite(Number(data?.data?.value)) ? Number(data.data.value) : null
-    };
-}
-
 async function handleAuth(request, env, url) {
     if (url.pathname === `${API_PREFIX}/auth/status`) {
         if (request.method !== 'GET') return methodNotAllowed('GET');
@@ -937,59 +848,49 @@ async function handleSettings(request, env, url) {
             ok: true,
             configured: {
                 r2: true,
-                adminPassword: Boolean(getSecret(env, ADMIN_PASSWORD_ENV)),
-                masterKey: Boolean(getSecret(env, MASTER_KEY_ENV)),
-                naiKey: await objectExists(bucket, NAI_KEY_OBJECT)
+                adminPassword: Boolean(getSecret(env, ADMIN_PASSWORD_ENV))
             }
         });
     }
     if (url.pathname === `${API_PREFIX}/settings`) {
         if (request.method === 'GET') {
             const settings = await loadSettings(bucket);
-            return json({ ok: true, ...settings, naiKeyConfigured: await objectExists(bucket, NAI_KEY_OBJECT) });
+            return json({ ok: true, ...settings });
         }
         if (request.method === 'PUT') {
             const body = await readJson(request);
             const current = await loadSettings(bucket);
             const settings = normalizeSettings({ ...current, ...body });
             await saveSettings(bucket, settings);
-            return json({ ok: true, ...settings, naiKeyConfigured: await objectExists(bucket, NAI_KEY_OBJECT) });
+            return json({ ok: true, ...settings });
         }
         return methodNotAllowed('GET, PUT');
     }
-    if (url.pathname === `${API_PREFIX}/settings/nai-key`) {
-        if (request.method === 'PUT' || request.method === 'POST') {
-            const body = await readJson(request, 16384);
-            const key = typeof body.key === 'string' ? body.key.trim() : '';
-            if (!key || key.length > 2000) {
-                throw new HttpError(400, 'NAI Key must be between 1 and 2000 characters.', 'invalid_nai_key');
-            }
-            const encrypted = await encryptNaiKey(key, requireMasterKey(env));
-            await bucket.put(NAI_KEY_OBJECT, JSON.stringify(encrypted), {
-                httpMetadata: { contentType: 'application/json; charset=utf-8' }
-            });
-            return json({ ok: true, naiKeyConfigured: true, updatedAt: encrypted.updatedAt });
-        }
-        if (request.method === 'DELETE') {
-            await bucket.delete(NAI_KEY_OBJECT);
-            return json({ ok: true, naiKeyConfigured: false });
-        }
-        return methodNotAllowed('PUT, POST, DELETE');
-    }
-    if (url.pathname === `${API_PREFIX}/settings/nai-key/test`) {
-        if (request.method !== 'POST') return methodNotAllowed('POST');
-        const body = await readJson(request, 16384);
-        const settings = await loadSettings(bucket);
-        const provider = body.provider == null ? settings.provider : String(body.provider).trim().toLowerCase();
-        if (!Object.hasOwn(PROVIDERS, provider)) {
-            throw new HttpError(400, 'provider must be sta1n or std.', 'invalid_provider');
-        }
-        const suppliedKey = typeof body.key === 'string' ? body.key.trim() : '';
-        if (suppliedKey.length > 2000) throw new HttpError(400, 'NAI Key is too long.', 'invalid_nai_key');
-        const key = suppliedKey || await decryptNaiKey(bucket, env);
-        return json({ ok: true, test: await testNaiKey(provider, key) });
-    }
     return null;
+}
+
+async function handleNaiAccountProxy(request) {
+    if (request.method !== 'POST') return methodNotAllowed('POST');
+    const body = await request.arrayBuffer();
+    if (body.byteLength > 16384) throw new HttpError(413, 'Request body is too large.', 'body_too_large');
+    const response = await fetchWithTimeout(new URL('/api/api/getUser', PROVIDERS.sta1n), {
+        method: 'POST',
+        headers: {
+            accept: request.headers.get('accept') || 'application/json',
+            'content-type': request.headers.get('content-type') || 'application/json; charset=utf-8',
+            'user-agent': 'RP-FixedImage-Worker/1.0'
+        },
+        body,
+        redirect: 'error'
+    }, UPSTREAM_TIMEOUT_MS);
+    return new Response(response.body, {
+        status: response.status,
+        headers: {
+            'content-type': response.headers.get('content-type') || 'application/json; charset=utf-8',
+            'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff'
+        }
+    });
 }
 
 function originHashForRequest(request) {
@@ -1332,6 +1233,7 @@ async function handleApi(request, env, ctx) {
     if (authResponse) return authResponse;
 
     if (url.pathname === `${API_PREFIX}/render`) return handleRender(request, env, url);
+    if (url.pathname === `${API_PREFIX}/generate`) return handleRender(request, env, url, { legacy: true });
     if (url.pathname === `${API_PREFIX}/webp`) return handleWebp(request, env, url);
     if (url.pathname === `${API_PREFIX}/images`) return handleImageList(request, env);
     if (url.pathname === `${API_PREFIX}/images/object`) {
@@ -1364,6 +1266,25 @@ async function serveStatic(request, env) {
     return env.ASSETS.fetch(request);
 }
 
+async function serveRpHubHtml(request, env) {
+    const response = await serveStatic(request, env);
+    if (request.method !== 'GET' || !response.ok) return response;
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.toLowerCase().includes('text/html')) return response;
+    const html = await response.text();
+    const marker = '</body>';
+    const script = '<script src="/rp-image/bridge.js" defer></script>';
+    if (!html.includes(marker) || html.includes(script)) return response;
+    const headers = new Headers(response.headers);
+    headers.delete('content-length');
+    headers.delete('etag');
+    return new Response(html.replace(marker, `${script}\n${marker}`), {
+        status: response.status,
+        statusText: response.statusText,
+        headers
+    });
+}
+
 export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
@@ -1371,9 +1292,20 @@ export default {
             if (url.pathname === API_PREFIX || url.pathname.startsWith(`${API_PREFIX}/`)) {
                 return await handleApi(request, env, ctx);
             }
+            if (url.pathname === '/generate') {
+                assertSameOrigin(request);
+                return await handleRender(request, env, url, { legacy: true });
+            }
+            if (url.pathname === '/api/api/getUser') {
+                assertSameOrigin(request);
+                return await handleNaiAccountProxy(request);
+            }
             if (url.pathname === '/rp-image') {
                 url.pathname = '/rp-image/';
                 return Response.redirect(url, 308);
+            }
+            if (url.pathname === '/' || url.pathname === '/index.html') {
+                return await serveRpHubHtml(request, env);
             }
             return await serveStatic(request, env);
         } catch (error) {

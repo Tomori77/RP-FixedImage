@@ -8,6 +8,23 @@ $SourceLine = "const IMAGE_GEN_BASE_URL = 'https://nai.sta1n.cn';"
 $PatchedLine = 'const IMAGE_GEN_BASE_URL = window.location.origin;'
 $SourceCharacterFragment = "&token=' + imageGenToken + '&model="
 $PatchedCharacterFragment = "&token=' + imageGenToken + '&character_name=' + encodeURIComponent(currentCharacter.value?.name || '未命名角色') + '&model="
+$SourceRegexLine = '                    const re = new RegExp(regexPattern, flags);'
+$PatchedRegexBlock = @'
+                    const re = new RegExp(regexPattern, flags);
+                    const replaceText = (input) => {
+                        if ((script.name || script.scriptName) !== 'NAI画图正则') {
+                            return input.replace(re, replacement);
+                        }
+                        return input.replace(re, (match, prompt) => String(replacement).replace(
+                            'tag=$1&',
+                            `tag=${encodeURIComponent(String(prompt || '').trim())}&`
+                        ));
+                    };
+'@.TrimEnd("`r", "`n")
+$SourceProtectedReplace = '                            return part.replace(re, replacement);'
+$PatchedProtectedReplace = '                            return replaceText(part);'
+$SourceDirectReplace = '                        result = result.replace(re, replacement);'
+$PatchedDirectReplace = '                        result = replaceText(result);'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 function Get-NormalizedHash([string]$Text) {
@@ -45,14 +62,42 @@ function Get-PatchState([string]$Text) {
     $patchedBaseCount = Get-OccurrenceCount $Text $PatchedLine
     $sourceCharacterCount = Get-OccurrenceCount $Text $SourceCharacterFragment
     $patchedCharacterCount = Get-OccurrenceCount $Text $PatchedCharacterFragment
+    $patchedRegexCount = Get-OccurrenceCount $Text $PatchedRegexBlock
+    $sourceProtectedCount = Get-OccurrenceCount $Text $SourceProtectedReplace
+    $patchedProtectedCount = Get-OccurrenceCount $Text $PatchedProtectedReplace
+    $sourceDirectCount = Get-OccurrenceCount $Text $SourceDirectReplace
+    $patchedDirectCount = Get-OccurrenceCount $Text $PatchedDirectReplace
 
-    if ($sourceBaseCount -eq 1 -and $sourceCharacterCount -eq 1 -and $patchedBaseCount -eq 0 -and $patchedCharacterCount -eq 0) {
+    $hasSourceRegexPath = $patchedRegexCount -eq 0 -and $sourceProtectedCount -eq 1 -and $patchedProtectedCount -eq 0 -and $sourceDirectCount -eq 1 -and $patchedDirectCount -eq 0
+    $hasPatchedRegexPath = $patchedRegexCount -eq 1 -and $sourceProtectedCount -eq 0 -and $patchedProtectedCount -eq 1 -and $sourceDirectCount -eq 0 -and $patchedDirectCount -eq 1
+
+    if ($sourceBaseCount -eq 1 -and $sourceCharacterCount -eq 1 -and $patchedBaseCount -eq 0 -and $patchedCharacterCount -eq 0 -and $hasSourceRegexPath) {
         return 'original'
     }
-    if ($patchedBaseCount -eq 1 -and $patchedCharacterCount -eq 1 -and $sourceBaseCount -eq 0 -and $sourceCharacterCount -eq 0) {
+    if ($patchedBaseCount -eq 1 -and $patchedCharacterCount -eq 1 -and $sourceBaseCount -eq 0 -and $sourceCharacterCount -eq 0 -and $hasSourceRegexPath) {
+        return 'legacy'
+    }
+    if ($patchedBaseCount -eq 1 -and $patchedCharacterCount -eq 1 -and $sourceBaseCount -eq 0 -and $sourceCharacterCount -eq 0 -and $hasPatchedRegexPath) {
         return 'patched'
     }
     return 'unknown'
+}
+
+function Restore-LegacyPatch([string]$Text) {
+    $result = Replace-Once $Text $PatchedLine $SourceLine
+    return Replace-Once $result $PatchedCharacterFragment $SourceCharacterFragment
+}
+
+function Apply-PromptEncodingPatch([string]$Text) {
+    $result = Replace-Once $Text $SourceRegexLine $PatchedRegexBlock
+    $result = Replace-Once $result $SourceProtectedReplace $PatchedProtectedReplace
+    return Replace-Once $result $SourceDirectReplace $PatchedDirectReplace
+}
+
+function Restore-PromptEncodingPatch([string]$Text) {
+    $result = Replace-Once $Text $PatchedRegexBlock $SourceRegexLine
+    $result = Replace-Once $result $PatchedProtectedReplace $SourceProtectedReplace
+    return Replace-Once $result $PatchedDirectReplace $SourceDirectReplace
 }
 
 if ([string]::IsNullOrWhiteSpace($Action)) {
@@ -85,6 +130,7 @@ $backup = "$Target.rp-fixed-image.bak"
 
 if ($Action -eq 'status') {
     if ($currentState -eq 'original') { Write-Host 'Status: compatible original app.js' -ForegroundColor Cyan; exit 0 }
+    if ($currentState -eq 'legacy') { Write-Host 'Status: old patch detected; run apply to fix image prompt encoding' -ForegroundColor Yellow; exit 2 }
     if ($currentState -eq 'patched') { Write-Host 'Status: same-origin role image cache enabled' -ForegroundColor Green; exit 0 }
     Write-Host "Status: incompatible or partially modified app.js ($(Get-NormalizedHash $originalText))" -ForegroundColor Yellow
     exit 2
@@ -92,10 +138,22 @@ if ($Action -eq 'status') {
 
 if ($Action -eq 'apply') {
     if ($currentState -eq 'patched') { Write-Host 'Same-origin role image cache is already enabled.' -ForegroundColor Green; exit 0 }
-    if ($currentState -ne 'original') { throw "Cannot find unique compatible patch points in app.js: $(Get-NormalizedHash $originalText)" }
-    [IO.File]::WriteAllText($backup, $originalText, $Utf8NoBom)
-    $result = Replace-Once $originalText $SourceLine $PatchedLine
-    $result = Replace-Once $result $SourceCharacterFragment $PatchedCharacterFragment
+    if ($currentState -notin @('original', 'legacy')) { throw "Cannot find unique compatible patch points in app.js: $(Get-NormalizedHash $originalText)" }
+    $sourceText = if ($currentState -eq 'legacy') { Restore-LegacyPatch $originalText } else { $originalText }
+    if (Test-Path -LiteralPath $backup) {
+        $backupText = [IO.File]::ReadAllText($backup, [Text.Encoding]::UTF8)
+        if ((Get-PatchState $backupText) -ne 'original') { throw "Backup patch-point verification failed: $backup" }
+        if ((Get-NormalizedHash $backupText) -ne (Get-NormalizedHash $sourceText)) { throw "Backup does not match the app.js being upgraded: $backup" }
+    } else {
+        [IO.File]::WriteAllText($backup, $sourceText, $Utf8NoBom)
+    }
+    $result = if ($currentState -eq 'legacy') {
+        Apply-PromptEncodingPatch $originalText
+    } else {
+        $sameOrigin = Replace-Once $originalText $SourceLine $PatchedLine
+        $withCharacter = Replace-Once $sameOrigin $SourceCharacterFragment $PatchedCharacterFragment
+        Apply-PromptEncodingPatch $withCharacter
+    }
     if ((Get-PatchState $result) -ne 'patched') { throw 'Patched output verification failed.' }
     [IO.File]::WriteAllText($Target, $result, $Utf8NoBom)
     Write-Host "Enabled same-origin role image cache: $Target" -ForegroundColor Green
@@ -104,10 +162,10 @@ if ($Action -eq 'apply') {
 }
 
 if ($currentState -eq 'original') { Write-Host 'app.js is already restored.' -ForegroundColor Cyan; exit 0 }
-if ($currentState -ne 'patched') { throw "Refusing to restore an incompatible app.js: $(Get-NormalizedHash $originalText)" }
+if ($currentState -notin @('legacy', 'patched')) { throw "Refusing to restore an incompatible app.js: $(Get-NormalizedHash $originalText)" }
 
-$result = Replace-Once $originalText $PatchedLine $SourceLine
-$result = Replace-Once $result $PatchedCharacterFragment $SourceCharacterFragment
+$withoutPromptPatch = if ($currentState -eq 'patched') { Restore-PromptEncodingPatch $originalText } else { $originalText }
+$result = Restore-LegacyPatch $withoutPromptPatch
 if ((Get-PatchState $result) -ne 'original') { throw 'Restored output verification failed.' }
 
 if (Test-Path -LiteralPath $backup) {

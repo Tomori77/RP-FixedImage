@@ -3848,6 +3848,15 @@ ${content}
                     }
 
                     const re = new RegExp(regexPattern, flags);
+                    const replaceText = (input) => {
+                        if ((script.name || script.scriptName) !== 'NAI画图正则') {
+                            return input.replace(re, replacement);
+                        }
+                        return input.replace(re, (match, prompt) => String(replacement).replace(
+                            'tag=$1&',
+                            `tag=${encodeURIComponent(String(prompt || '').trim())}&`
+                        ));
+                    };
 
                     // --- Protection Logic Start ---
                     // 只有当正则不包含 < 或 > 且不包含 markdown 代码块标记 (```) 时，才启用 HTML/代码块保护
@@ -3868,11 +3877,11 @@ ${content}
                                 return part; // 保持原样
                             }
                             // 对普通文本应用替换
-                            return part.replace(re, replacement);
+                            return replaceText(part);
                         }).join('');
                     } else {
                         // 如果正则明确包含 <, > 或 ```，说明用户意图直接操作 HTML 或 Markdown 代码块，因此跳过保护直接替换
-                        result = result.replace(re, replacement);
+                        result = replaceText(result);
                     }
                     // --- Protection Logic End ---
 

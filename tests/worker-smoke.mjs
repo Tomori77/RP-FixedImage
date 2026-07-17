@@ -160,7 +160,7 @@ try {
     assert(lastAccountBody === accountBody, 'NAI account request body was not forwarded unchanged');
 
     const legacyParams = new URLSearchParams({
-        tag: '1girl, red hair & blue eyes',
+        tag: '1girl, red hair & blue eyes # smile + light? 100%',
         token: 'BROWSER-NAI-TOKEN',
         character_name: 'Alice / 测试',
         model: 'nai-diffusion-4-5-full',

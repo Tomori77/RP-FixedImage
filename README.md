@@ -2,7 +2,7 @@
 
 RP-FixedImage 基于 RP-Hub 1.7.6，通过 Cloudflare Worker、Static Assets 和 R2 为聊天生图提供持久缓存、WebP 压缩副本、图片管理与浏览器数据备份。
 
-仓库中的 RP-Hub 1.7.6 源文件保持原样。Worker 返回主页时会在响应 HTML 中运行时注入 WebP bridge；需要启用同源代理时，BAT 只修改 `assets/js/app.js` 中的两个稳定片段：将 NAI 地址改为同源，并为生图请求增加当前角色名。
+Worker 返回主页时会在响应 HTML 中运行时注入 WebP bridge。BAT 对 `assets/js/app.js` 做最小接入：将 NAI 地址改为同源、为生图请求增加当前角色名，并在正则替换时对提示词执行 URL 编码。
 
 ## 功能
 
@@ -54,7 +54,7 @@ assets/js/utils.js
 LICENSE
 ```
 
-`assets/js/app.js` 默认保持 RP-Hub 1.7.6 原样。使用仓库中的 BAT 后只会把 `IMAGE_GEN_BASE_URL` 从 `https://nai.sta1n.cn` 改为 `window.location.origin`，并在默认生图 URL 中增加 URL 编码后的 `character_name`。其他默认生图参数和 token 传递逻辑保持不变。
+使用仓库中的 BAT 后会把 `IMAGE_GEN_BASE_URL` 从 `https://nai.sta1n.cn` 改为 `window.location.origin`，在默认生图 URL 中增加 URL 编码后的 `character_name`，并仅对 `NAI画图正则` 捕获的提示词执行 URL 编码，避免提示词中的 `&`、`#`、`+` 等字符破坏请求。其他默认生图参数和 token 传递逻辑保持不变。
 
 ## 角色卡工坊
 
@@ -165,7 +165,7 @@ rp-fixed-image-app.bat apply D:\path\to\RP-Hub
 rp-fixed-image-app.bat restore D:\path\to\RP-Hub
 ```
 
-第二个参数也可以直接指向 `assets\js\app.js`。脚本只修改两个唯一片段：将 `IMAGE_GEN_BASE_URL` 改为同源，并在默认 `/generate` URL 中加入当前角色的 `character_name`；其他默认正则内容和参数保持原样。脚本不锁定整个文件哈希，因此 RP 更新后只要这两个补丁点仍唯一且结构兼容即可直接应用；遇到缺失、重复或部分修改的补丁点会停止。每次应用都会在原文件旁创建或更新 `app.js.rp-fixed-image.bak`，还原时会校验备份与当前补丁可逆结果一致。
+第二个参数也可以直接指向 `assets\js\app.js`。脚本修改同源地址、角色名参数和 `NAI画图正则` 的提示词编码路径；普通正则不受影响。脚本不锁定整个文件哈希，因此 RP 更新后只要补丁点仍唯一且结构兼容即可直接应用；遇到缺失、重复或部分修改的补丁点会停止。旧版两处补丁可直接再次运行 `apply` 升级，无需先还原。每次首次应用都会在原文件旁创建 `app.js.rp-fixed-image.bak`，还原时会校验备份与当前补丁可逆结果一致。
 
 ## 许可证
 

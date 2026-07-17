@@ -5,6 +5,6 @@
   "type": "module",
   "scripts": {
     "check": "node --check _worker.js && node --check assets/js/app.js && node --check rp-image/bridge.js && node --check rp-image/admin.js",
-    "test": "node tests/source-baseline.mjs && node tests/worker-smoke.mjs"
+    "test": "node tests/source-baseline.mjs && powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/app-patch-smoke.ps1 && node tests/worker-smoke.mjs"
   }
 }

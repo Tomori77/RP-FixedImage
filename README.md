@@ -151,6 +151,29 @@ npm test
 
 `npm test` 验证管理登录、设置保存、NAI Key 加密、首次生成、原图缓存、WebP 优先缓存和备份分片提交。
 
+## app.js 补丁脚本
+
+仓库根目录的 `rp-fixed-image-app.bat` 可以对 RP-Hub 1.7.6 的 `assets/js/app.js` 应用或还原 RP-FixedImage 接入。
+
+`rp-fixed-image-app.bat` 是直接运行入口，具体补丁逻辑位于同目录的 `rp-fixed-image-app.ps1`。复制脚本到其他位置时需要同时保留这两个文件。
+
+在本仓库中使用：
+
+```text
+rp-fixed-image-app.bat status
+rp-fixed-image-app.bat apply
+rp-fixed-image-app.bat restore
+```
+
+对其他 RP-Hub 1.7.6 目录使用：
+
+```text
+rp-fixed-image-app.bat apply D:\path\to\RP-Hub-1.7.6
+rp-fixed-image-app.bat restore D:\path\to\RP-Hub-1.7.6
+```
+
+第二个参数也可以直接指向 `assets\js\app.js`。脚本只接受哈希匹配的原版 RP-Hub 1.7.6 或当前 RP-FixedImage 文件，遇到未知或部分修改版本会停止，避免覆盖其他改动。首次应用时会在原文件旁创建 `app.js.rp-fixed-image.bak`，还原时优先使用经过哈希校验的备份；即使备份不存在，也可以反向还原当前补丁。
+
 ## 许可证
 
 RP-Hub 基础代码继续遵循 `CC BY-NC 4.0`，详见 `LICENSE`。未经原作者授权不得用于商业用途。

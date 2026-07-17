@@ -4,3 +4,4 @@
 .env.*
 !.env.example
 node_modules/
+*.rp-fixed-image.bak

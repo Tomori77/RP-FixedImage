@@ -1,6 +1,12 @@
 name = "rp-fixed-image"
+main = "_worker.js"
 compatibility_date = "2026-07-17"
-pages_build_output_dir = "."
+keep_vars = true
+
+[assets]
+directory = "."
+binding = "ASSETS"
+run_worker_first = true
 
 [[r2_buckets]]
 binding = "RP_IMAGE_R2"

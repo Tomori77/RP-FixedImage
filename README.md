@@ -103,7 +103,17 @@ RP-image/save/<站点名称>--<Origin-SHA-256>/<时间戳>/
 
 ## Cloudflare 部署
 
-将整个仓库作为 Cloudflare Pages 项目部署。项目根目录中的 `_worker.js` 使用 Pages Advanced Mode，并通过 `env.ASSETS` 提供静态文件。
+项目使用 Cloudflare Worker + Static Assets 部署。`wrangler.jsonc` 明确将 `_worker.js` 设为 Worker 入口，并通过 `env.ASSETS` 提供仓库中的 RP-Hub 静态文件；`.assetsignore` 会阻止 Worker 源码、Git 文件、测试和开发脚本被作为公开静态资源上传。
+
+Cloudflare Git 构建配置：
+
+```text
+Build command: npm run check
+Deploy command: npx wrangler deploy
+Root directory: /
+```
+
+不要将 Deploy command 配置为 `npx wrangler deploy .`。显式传入 `.` 会让 Wrangler 将整个仓库优先识别为静态资源目录，并可能触发 `_worker.js` 被当作公开资源上传的保护错误。
 
 创建 R2 Bucket，并配置以下绑定名称：
 

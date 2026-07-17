@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "rp-fixed-image",
+  "name": "rp-fixedimage",
   "main": "_worker.js",
   "compatibility_date": "2026-07-17",
   "keep_vars": true,

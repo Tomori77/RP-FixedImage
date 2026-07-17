@@ -1,0 +1,11 @@
+name = "rp-fixed-image"
+compatibility_date = "2026-07-17"
+pages_build_output_dir = "."
+
+[[r2_buckets]]
+binding = "RP_IMAGE_R2"
+bucket_name = "your-r2-bucket"
+
+# Configure secrets with Cloudflare Pages/Workers instead of storing them here:
+# RP_IMAGE_ADMIN_PASSWORD
+# RP_IMAGE_MASTER_KEY

@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light">
+    <title>RP Image 管理台</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="page-glow page-glow-a" aria-hidden="true"></div>
+    <div class="page-glow page-glow-b" aria-hidden="true"></div>
+
+    <section id="loginView" class="login-view" hidden>
+        <form id="loginForm" class="login-card">
+            <div class="brand-mark" aria-hidden="true">RP</div>
+            <p class="eyebrow">RP Image Console</p>
+            <h1>管理端登录</h1>
+            <p class="muted">密码仅用于本次登录，并由同源 Worker 建立 HttpOnly Cookie。页面不会保存管理密码。</p>
+            <label class="field">
+                <span>管理密码</span>
+                <input id="passwordInput" type="password" autocomplete="current-password" required placeholder="请输入管理密码">
+            </label>
+            <button id="loginButton" class="button primary wide" type="submit">登录管理台</button>
+            <p id="loginError" class="form-message error" role="alert"></p>
+        </form>
+    </section>
+
+    <div id="appView" class="app-shell" hidden>
+        <header class="topbar">
+            <div class="brand">
+                <div class="brand-mark small" aria-hidden="true">RP</div>
+                <div>
+                    <p class="eyebrow">RP Image Console</p>
+                    <h1>图片与浏览器备份</h1>
+                </div>
+            </div>
+            <div class="topbar-actions">
+                <span id="connectionBadge" class="status-badge online">已连接</span>
+                <button id="logoutButton" class="button ghost compact" type="button">退出</button>
+            </div>
+        </header>
+
+        <nav class="tabs" aria-label="管理功能">
+            <button class="tab active" type="button" data-tab="images" aria-selected="true">图片管理</button>
+            <button class="tab" type="button" data-tab="backups" aria-selected="false">浏览器备份</button>
+            <button class="tab" type="button" data-tab="settings" aria-selected="false">设置</button>
+        </nav>
+
+        <main>
+            <section id="tab-images" class="tab-panel active" aria-labelledby="图片管理">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Image Library</p>
+                        <h2>图片管理</h2>
+                        <p class="muted">按角色名称与 UUID 分组查看原图和 WebP。</p>
+                    </div>
+                    <button id="refreshImagesButton" class="button secondary" type="button">刷新图片</button>
+                </div>
+
+                <div class="toolbar card">
+                    <label class="search-field">
+                        <span class="sr-only">搜索角色或 UUID</span>
+                        <input id="imageSearchInput" type="search" placeholder="搜索角色名称、UUID 或图片标识">
+                    </label>
+                    <div id="imageSummary" class="summary-line">尚未读取图片</div>
+                </div>
+                <div id="imageGroups" class="image-groups" aria-live="polite"></div>
+            </section>
+
+            <section id="tab-backups" class="tab-panel" aria-labelledby="浏览器备份">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Browser Snapshot</p>
+                        <h2>浏览器备份</h2>
+                        <p class="muted">将当前同源站点的 RP-Hub 数据流式分片保存到远端。</p>
+                    </div>
+                    <button id="refreshBackupsButton" class="button secondary" type="button">刷新版本</button>
+                </div>
+
+                <div class="danger-banner" role="alert">
+                    <strong>备份不加密。</strong>
+                    <span>备份会包含聊天内容、角色资料，以及被应用保存在白名单存储中的 API Key。请仅使用可信 Worker 与私有存储。</span>
+                </div>
+
+                <div class="backup-layout">
+                    <section class="card backup-create-card">
+                        <div class="card-heading">
+                            <div>
+                                <p class="eyebrow">Create Snapshot</p>
+                                <h3>创建新备份</h3>
+                            </div>
+                            <span class="chip">8 MiB / 片</span>
+                        </div>
+                        <label class="field">
+                            <span>站点链接</span>
+                            <input id="siteLinkInput" type="url" inputmode="url" spellcheck="false">
+                            <small>第一版只允许与当前 <code>location.origin</code> 相同的链接。</small>
+                        </label>
+                        <div class="site-id-box">
+                            <span>站点 ID</span>
+                            <code id="siteIdValue">生成中...</code>
+                        </div>
+                        <div class="scope-list">
+                            <div><strong>IndexedDB</strong><span>RPHubDB/store</span></div>
+                            <div><strong>IndexedDB</strong><span>AICharGen/characters</span></div>
+                            <div><strong>兼容读取</strong><span>SillyTavernDB/store（存在时）</span></div>
+                            <div><strong>localStorage</strong><span>rp_hub_* / ai_chargen_* / silly_tavern_*</span></div>
+                        </div>
+                        <button id="createBackupButton" class="button primary wide" type="button">读取并上传备份</button>
+                        <div id="backupProgress" class="progress-block" hidden>
+                            <div class="progress-meta">
+                                <span id="backupProgressText">准备中...</span>
+                                <span id="backupProgressValue">0%</span>
+                            </div>
+                            <div class="progress-track"><div id="backupProgressBar" class="progress-bar"></div></div>
+                        </div>
+                    </section>
+
+                    <section class="card versions-card">
+                        <div class="card-heading">
+                            <div>
+                                <p class="eyebrow">Remote Versions</p>
+                                <h3>远端版本</h3>
+                            </div>
+                            <span id="backupCountBadge" class="chip">0 个版本</span>
+                        </div>
+                        <div id="backupList" class="backup-list" aria-live="polite"></div>
+                    </section>
+                </div>
+            </section>
+
+            <section id="tab-settings" class="tab-panel" aria-labelledby="设置">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Worker Settings</p>
+                        <h2>设置</h2>
+                        <p class="muted">密钥明文不会从 Worker 回显到本页面。</p>
+                    </div>
+                </div>
+
+                <form id="settingsForm" class="settings-grid">
+                    <section class="card settings-card key-card">
+                        <div class="card-heading">
+                            <div>
+                                <p class="eyebrow">NovelAI</p>
+                                <h3>NAI Key</h3>
+                            </div>
+                            <span id="keyStatusBadge" class="status-badge neutral">未知</span>
+                        </div>
+                        <label class="field">
+                            <span>新 Key</span>
+                            <input id="naiKeyInput" type="password" autocomplete="new-password" placeholder="留空表示不修改现有 Key">
+                            <small>保存或测试后会立即清空输入框，不回显服务端明文。</small>
+                        </label>
+                        <div class="button-row">
+                            <button id="testKeyButton" class="button secondary" type="button">测试 Key</button>
+                            <button id="deleteKeyButton" class="button danger" type="button">删除 Key</button>
+                        </div>
+                    </section>
+
+                    <section class="card settings-card">
+                        <div class="card-heading">
+                            <div>
+                                <p class="eyebrow">Generation</p>
+                                <h3>图片处理</h3>
+                            </div>
+                        </div>
+                        <label class="field">
+                            <span>Provider</span>
+                            <select id="providerSelect">
+                                <option value="sta1n">sta1n</option>
+                                <option value="std">std</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>WebP Quality <output id="webpQualityValue">82</output></span>
+                            <input id="webpQualityInput" type="range" min="1" max="100" step="1" value="82">
+                        </label>
+                    </section>
+
+                    <section class="card settings-card">
+                        <div class="card-heading">
+                            <div>
+                                <p class="eyebrow">Retention</p>
+                                <h3>备份保留</h3>
+                            </div>
+                        </div>
+                        <label class="field">
+                            <span>远端保留次数</span>
+                            <input id="backupRetentionInput" type="number" min="1" max="30" step="1" value="5">
+                            <small>新备份 commit 后由 Worker 清理超出数量的旧版本。</small>
+                        </label>
+                    </section>
+
+                    <div class="settings-submit-row">
+                        <p id="settingsMessage" class="form-message" role="status"></p>
+                        <button id="saveSettingsButton" class="button primary" type="submit">保存设置</button>
+                    </div>
+                </form>
+            </section>
+        </main>
+    </div>
+
+    <dialog id="previewDialog" class="preview-dialog">
+        <div class="preview-header">
+            <div>
+                <p class="eyebrow">Image Preview</p>
+                <h3 id="previewTitle">图片预览</h3>
+            </div>
+            <button id="closePreviewButton" class="icon-button" type="button" aria-label="关闭预览">×</button>
+        </div>
+        <div class="preview-stage"><img id="previewImage" alt="图片预览"></div>
+        <div id="previewMeta" class="preview-meta"></div>
+    </dialog>
+
+    <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <script src="admin.js" defer></script>
+</body>
+</html>

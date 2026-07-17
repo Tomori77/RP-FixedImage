@@ -1,0 +1,10 @@
+{
+  "name": "rp-fixed-image",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check _worker.js && node --check assets/js/app.js && node --check rp-image/bridge.js && node --check rp-image/admin.js",
+    "test": "node tests/worker-smoke.mjs"
+  }
+}

@@ -1,116 +1,156 @@
 # RP-FixedImage
 
-RP-FixedImage is an RP-Hub 1.7.3 based deployment that persists generated images in Cloudflare R2.
+RP-FixedImage 基于 RP-Hub 1.7.6，通过 Cloudflare Pages Advanced Mode Worker 和 R2 为聊天生图提供持久缓存、WebP 压缩副本、图片管理与浏览器数据备份。
 
-The first successful image request stores the original image in R2. The browser then converts that image to WebP and uploads the smaller copy. Later requests prefer the WebP copy and never return to the upstream image generator while either R2 copy exists.
+项目尽量减少对 RP-Hub 的侵入：`index.html`、样式、工具脚本和许可证保持 RP-Hub 1.7.6 原样，仅在 `assets/js/app.js` 中加入必要的加载入口、图片 URL 构造和备份写入控制。
 
-## Features
+## 功能
 
-- RP-Hub 1.7.3 hosted from the same Cloudflare Pages deployment.
-- Image storage grouped by character name and UUID.
-- Image filenames derived from SHA-256 of the complete normalized generation parameters.
-- Original image storage:
+- RP-Hub 1.7.6 与 Worker、管理台同源部署。
+- 浏览器不再把 NAI Key 放入图片 URL。
+- 首次生成后将原图保存到 R2，后续请求不再调用上游生图服务。
+- 浏览器将原图转换为 WebP 并回传，之后优先返回 WebP。
+- 图片按角色名称和 UUID 分组。
+- 图片名使用完整生成参数规范化后的 SHA-256。
+- NAI Key 使用 AES-GCM 加密后保存到 R2，管理台不回显明文。
+- 管理台支持图片查看、删除、NAI Key 设置、浏览器备份和恢复。
+- 浏览器备份按分片上传，并校验每个分片和完整清单。
 
-  ```text
-  RP-image/image/<character-name>--<character-uuid>/<sha256>
-  ```
+## 图片存储
 
-- Browser-produced WebP storage:
+原图：
 
-  ```text
-  RP-image/Cache/<character-name>--<character-uuid>/<sha256>.webp
-  ```
+```text
+RP-image/image/<角色名称>--<角色UUID>/<SHA-256>
+```
 
-- Image and backup management at `/rp-image`.
-- NAI Key encrypted with AES-GCM before being stored in R2.
-- Unencrypted, versioned browser snapshots for RP-Hub IndexedDB and localStorage.
-- Snapshot chunks are SHA-256 verified before commit and restore.
+WebP：
 
-## Cloudflare Deployment
+```text
+RP-image/Cache/<角色名称>--<角色UUID>/<SHA-256>.webp
+```
 
-Deploy this entire directory as a Cloudflare Pages project. `_worker.js` uses Pages Advanced Mode and serves the static RP-Hub assets through `env.ASSETS`.
+图片请求流程：
 
-Create an R2 bucket and bind it to the Pages project with this exact binding name:
+```text
+RP-Hub 输出 image###提示词###
+  -> /rp-image/api/render
+  -> R2 中存在 WebP：返回 WebP
+  -> R2 中存在原图：返回原图
+  -> 两者均不存在：Worker 解密 NAI Key 并请求上游
+  -> 保存原图并返回
+  -> 浏览器转换为 WebP 并上传
+```
+
+## 与 RP-Hub 1.7.6 的差异
+
+保持原样的上游文件：
+
+```text
+index.html
+assets/css/styles.css
+assets/js/card-utils.js
+assets/js/ui-select.js
+assets/js/utils.js
+LICENSE
+```
+
+为接入 RP-FixedImage 而修改的上游文件：
+
+```text
+assets/js/app.js
+```
+
+`app.js` 中的改动仅包括：
+
+- 动态加载 `/rp-image/bridge.js`，不修改 `index.html`。
+- 将 `NAI画图正则` 的图片地址改为同源 Worker。
+- 对正则捕获的提示词执行 URL 编码。
+- 将额度和图片服务状态检查改为 Worker 接口。
+- 提供主 RP-Hub 的备份刷新、暂停、恢复和重载入口。
+
+## 角色卡工坊
+
+本版本不包含 `character/index.html`。RP-Hub 1.7.6 参考文件中存在硬编码的第三方 API Key，为避免向公开仓库提交凭据，已按项目决策移除角色卡工坊文件。
+
+因此：
+
+- 主 RP-Hub、聊天、角色卡管理和聊天生图仍可使用。
+- 侧边栏中的“角色卡生成”页面无法加载。
+- 备份恢复期间只会自动暂停主 RP-Hub 的写入。
+- 恢复前仍应关闭其他打开的 RP-Hub 标签页。
+
+## 浏览器备份
+
+备份范围：
+
+```text
+RPHubDB/store
+AICharGen/characters（存在时）
+SillyTavernDB/store（存在时）
+rp_hub_*
+ai_chargen_*
+silly_tavern_*
+```
+
+R2 目录：
+
+```text
+RP-image/save/<站点名称>--<Origin-SHA-256>/<时间戳>/
+```
+
+备份不会加密，可能包含聊天、角色、记忆、用户资料和应用保存的 API Key。请只使用私有 R2 Bucket，并严格限制 Cloudflare 账户权限。
+
+## Cloudflare 部署
+
+将整个仓库作为 Cloudflare Pages 项目部署。项目根目录中的 `_worker.js` 使用 Pages Advanced Mode，并通过 `env.ASSETS` 提供静态文件。
+
+创建 R2 Bucket，并配置以下绑定名称：
 
 ```text
 RP_IMAGE_R2
 ```
 
-Configure these Worker secrets:
+配置 Worker Secrets：
 
 ```text
 RP_IMAGE_ADMIN_PASSWORD
 RP_IMAGE_MASTER_KEY
 ```
 
-Use a long, random `RP_IMAGE_MASTER_KEY`. Changing it after saving the NAI Key makes the existing encrypted Key unreadable; in that case, delete and save the NAI Key again.
+`RP_IMAGE_MASTER_KEY` 应使用足够长的随机值。保存 NAI Key 后如果修改该 Secret，原有密文将无法解密，需要删除并重新保存 NAI Key。
 
-After deployment:
+部署后：
 
-1. Open `https://<your-domain>/rp-image`.
-2. Sign in with `RP_IMAGE_ADMIN_PASSWORD`.
-3. Open **Settings**, enter the NAI Key, test it, and save it.
-4. Select a character in RP-Hub and enable automatic image generation.
+1. 打开 `https://<域名>/rp-image`。
+2. 使用 `RP_IMAGE_ADMIN_PASSWORD` 登录。
+3. 在“设置”中填写、测试并保存 NAI Key。
+4. 返回 RP-Hub，选择角色并启用自动生图。
 
-The management login creates a 30-day HttpOnly, Secure, SameSite=Strict cookie scoped to `/rp-image`. Existing R2 image copies can be read without generating again. A cache miss requires a valid management session before the Worker calls the upstream generator.
+管理登录使用有效期 30 天的 `HttpOnly`、`Secure`、`SameSite=Strict` Cookie，作用域为 `/rp-image`。R2 已存在的图片可直接读取；缓存未命中并需要调用上游时，浏览器必须有有效管理会话。
 
-## Image Flow
+## 限制
 
-```text
-RP-Hub image###prompt###
-    -> /rp-image/api/render
-    -> WebP exists: return WebP
-    -> original exists: return original
-    -> neither exists: call NAI, store original, return original
-    -> browser bridge converts to WebP and uploads it
-    -> later requests return WebP
-```
+- 原图最大 64 MiB。
+- WebP 最大 32 MiB。
+- 浏览器备份分片为 8 MiB，Worker 单分片上限为 16 MiB。
+- 单个备份最大 1 GiB、最多 256 个分片。
+- 每个站点可保留 1 到 30 个备份版本。
+- 同参数生成锁只在单个 Worker isolate 内有效。R2 是最终持久缓存，但极端并发的首次请求仍可能跨 isolate 重复调用上游。
 
-Original and first-generation responses use `Cache-Control: no-store` so the browser checks again on the next page load and can switch to WebP. Stored WebP responses use a one-hour revalidating cache so management deletion is observable without waiting a year.
+## 本地验证
 
-## Browser Backups
-
-The backup page reads same-origin data from:
+项目没有构建步骤。
 
 ```text
-RPHubDB/store
-AICharGen/characters
-SillyTavernDB/store (when present)
-rp_hub_*
-ai_chargen_*
-silly_tavern_*
+npm run check
+npm test
 ```
 
-Backups are stored under:
+`npm run check` 检查 Worker、RP-Hub 接入脚本、bridge 和管理端脚本语法。
 
-```text
-RP-image/save/<site-name>--<origin-sha256>/<timestamp>/
-```
+`npm test` 验证管理登录、设置保存、NAI Key 加密、首次生成、原图缓存、WebP 优先缓存和备份分片提交。
 
-Backups are intentionally **not encrypted**. They can contain chat history, role data, memories, and API Keys. Use a private R2 bucket and restrict access to the Cloudflare account.
+## 许可证
 
-Restoring a backup replaces the whitelisted browser data. The management page asks RP-Hub to flush and pause persistence before restoration, then reloads the RP-Hub tab.
-
-## Limits
-
-- Original image: 64 MiB maximum.
-- WebP copy: 32 MiB maximum.
-- Backup chunk: 16 MiB Worker limit; the browser currently creates 8 MiB chunks.
-- Backup: 1 GiB maximum, 256 chunks maximum.
-- Backup retention: 1 to 30 versions per origin.
-- The in-memory duplicate-generation lock is per Worker isolate. R2 remains the durable cache, but extremely concurrent first requests reaching different isolates can still call the upstream more than once.
-
-## Development
-
-The project has no build step. Syntax checks:
-
-```text
-node --check _worker.js
-node --check assets/js/app.js
-node --check rp-image/bridge.js
-node --check rp-image/admin.js
-```
-
-## License
-
-The RP-Hub base remains licensed under CC BY-NC 4.0. See `LICENSE`. Commercial use is not permitted without appropriate authorization from the original project author.
+RP-Hub 基础代码继续遵循 `CC BY-NC 4.0`，详见 `LICENSE`。未经原作者授权不得用于商业用途。

@@ -4,7 +4,7 @@ pages_build_output_dir = "."
 
 [[r2_buckets]]
 binding = "RP_IMAGE_R2"
-bucket_name = "your-r2-bucket"
+bucket_name = "rp-fiamge"
 
 # Configure secrets with Cloudflare Pages/Workers instead of storing them here:
 # RP_IMAGE_ADMIN_PASSWORD
